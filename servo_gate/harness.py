@@ -19,6 +19,7 @@ import numpy as np
 import onnxruntime
 
 from servo import apply_spec, load_spec
+from start_state import JOINT_NOISE_RAD, perturb_joints
 
 ap = argparse.ArgumentParser()
 ap.add_argument("model")
@@ -26,6 +27,7 @@ ap.add_argument("onnx")
 ap.add_argument("out")
 ap.add_argument("--pg", default=os.path.join(os.path.dirname(__file__), "..", "pg"))
 ap.add_argument("--servo", help="servo spec JSON with per-group forcerange/kp/armature/damping/frictionloss/added_mass")
+ap.add_argument("--seed", type=int, help=f"perturb the home joint angles by uniform +-{JOINT_NOISE_RAD} rad with this seed")
 a = ap.parse_args()
 sys.path.insert(0, os.path.join(a.pg, "playground", "common"))
 from poly_reference_motion_numpy import PolyReferenceMotion  # noqa: E402
@@ -47,7 +49,7 @@ qadr = np.array([m.jnt_qposadr[j] for j in jids])
 vadr = np.array([m.jnt_dofadr[j] for j in jids])
 key = m.keyframe("home")
 default = key.ctrl[pol].copy()
-d.qpos[:] = key.qpos
+d.qpos[:] = key.qpos if a.seed is None else perturb_joints(key.qpos, qadr, a.seed)
 d.ctrl[:] = key.ctrl
 motor_targets = default.copy()
 prev_motor_targets = default.copy()
@@ -110,6 +112,7 @@ print("actuators:", [names[k] for k in pol])
 print("kp", np.round(m.actuator_gainprm[pol, 0], 3).tolist())
 print("forcerange", np.round(m.actuator_forcerange[pol], 3).tolist())
 print("servo spec", a.servo or "none")
+print("start seed", "none" if a.seed is None else f"{a.seed} (joint noise +-{JOINT_NOISE_RAD} rad)")
 for row in servo_rows:
     print("  servo override %s kp %.4g forcerange %.4g armature %.4g damping %.4g"
           " frictionloss %.4g servo_body %s mass %.4g" % row)

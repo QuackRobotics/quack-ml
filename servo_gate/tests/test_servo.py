@@ -109,3 +109,20 @@ class ApplySpecTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PerturbJointsTest(unittest.TestCase):
+    def test_same_seed_same_pose_and_only_joints_move(self) -> None:
+        from start_state import JOINT_NOISE_RAD, perturb_joints
+        qpos = np.zeros(10)
+        qadr = np.array([7, 8, 9])
+        first, second = perturb_joints(qpos, qadr, 3), perturb_joints(qpos, qadr, 3)
+        np.testing.assert_array_equal(first, second)
+        np.testing.assert_array_equal(first[:7], 0.0)
+        self.assertTrue(np.all(np.abs(first[qadr]) <= JOINT_NOISE_RAD))
+        self.assertFalse(np.array_equal(first, perturb_joints(qpos, qadr, 4)))
+
+    def test_rejects_non_positive_amplitude(self) -> None:
+        from start_state import perturb_joints
+        with self.assertRaises(ValueError):
+            perturb_joints(np.zeros(3), np.array([0]), 0, amplitude=0.0)

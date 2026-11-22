@@ -3,18 +3,20 @@
 # Usage: run_gate.sh <spec.json>
 # Env (all required): PY (python with mujoco + onnxruntime), PG_ROOT (Playground checkout),
 #   ONNX (policy file), OUT_ROOT (local run folders), GATE_BACKUP_URI (gs://.../razer).
-#   NO_BACKUP=1 skips the upload explicitly.
+#   NO_BACKUP=1 skips the upload explicitly. SEED=<int> perturbs the start pose; the run is named <name>_s<seed>.
 set -euo pipefail
 SPEC=$(realpath "$1")
 : "${PY:?}" "${PG_ROOT:?}" "${ONNX:?}" "${OUT_ROOT:?}"
 HERE=$(cd "$(dirname "$0")" && pwd)
 NAME=$("$PY" -c "import sys; sys.path.insert(0, '$HERE'); from servo import load_spec; print(load_spec('$SPEC')['name'])")
 MODEL=$PG_ROOT/playground/open_duck_mini_v2/xmls/scene_flat_terrain.xml
+SEED_ARG=""
+if [ -n "${SEED:-}" ]; then NAME=${NAME}_s$SEED; SEED_ARG="--seed $SEED"; fi
 OUT=$OUT_ROOT/$NAME
 if [ -e "$OUT" ]; then echo "refusing to overwrite $OUT" >&2; exit 2; fi
 mkdir -p "$OUT"
 cp "$SPEC" "$OUT/servo_spec.json"
-CMD="ulimit -v 3000000; $PY $HERE/harness.py $MODEL $ONNX $OUT --pg $PG_ROOT --servo $OUT/servo_spec.json && $PY $HERE/analyze.py $OUT"
+CMD="ulimit -v 3000000; $PY $HERE/harness.py $MODEL $ONNX $OUT --pg $PG_ROOT --servo $OUT/servo_spec.json $SEED_ARG && $PY $HERE/analyze.py $OUT"
 echo "$CMD" > "$OUT/COMMAND.txt"
 {
   echo "quack-ml $(git -C "$HERE" describe --always --dirty --abbrev=40)"
