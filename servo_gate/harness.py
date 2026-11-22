@@ -6,7 +6,9 @@ Differences from the reference (by design):
    model has them, stay at their home ctrl (0). Obs fields use those 14 joints.
 Timing matches MJInferBase: one mj_step from qpos0, then home qpos/ctrl, then the
 policy acts after every 10th physics step.
-Usage: harness.py <model.xml> <onnx> <outdir> [--pg <pg_repo_root>]
+Usage: harness.py <model.xml> <onnx> <outdir> [--pg <pg_repo_root>] [--servo <spec.json>]
+--servo overrides forcerange, kp and armature per leg joint group (see servo.py) on the
+compiled model before the first step; without it the run is unchanged.
 """
 import argparse
 import os
@@ -16,11 +18,14 @@ import mujoco
 import numpy as np
 import onnxruntime
 
+from servo import apply_spec, load_spec
+
 ap = argparse.ArgumentParser()
 ap.add_argument("model")
 ap.add_argument("onnx")
 ap.add_argument("out")
 ap.add_argument("--pg", default=os.path.join(os.path.dirname(__file__), "..", "pg"))
+ap.add_argument("--servo", help="servo spec JSON with per-group forcerange/kp/armature")
 a = ap.parse_args()
 sys.path.insert(0, os.path.join(a.pg, "playground", "common"))
 from poly_reference_motion_numpy import PolyReferenceMotion  # noqa: E402
@@ -31,6 +36,7 @@ COMMANDS = np.array([0.15, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])  # arrow-up = COMMANDS
 
 m = mujoco.MjModel.from_xml_path(a.model)
 m.opt.timestep = SIM_DT
+servo_rows = apply_spec(m, load_spec(a.servo)) if a.servo else []
 d = mujoco.MjData(m)
 mujoco.mj_step(m, d)
 
@@ -96,10 +102,15 @@ os.makedirs(a.out, exist_ok=True)
 np.save(f"{a.out}/actuator_force.npy", np.array(log_force))
 np.save(f"{a.out}/base_qpos.npy", np.array(log_base))
 np.save(f"{a.out}/obs_first50.npy", np.array(saved_obs[:50]))
+np.save(f"{a.out}/actuator_forcerange.npy", m.actuator_forcerange[pol])
 open(f"{a.out}/actuator_names.txt", "w").write(" ".join(names[k] for k in pol))
 print("mujoco", mujoco.__version__, "onnxruntime", onnxruntime.__version__)
 print("model", a.model, "nu", m.nu, "policy actuators", n, "obs dim", len(saved_obs[0]))
 print("actuators:", [names[k] for k in pol])
 print("kp", np.round(m.actuator_gainprm[pol, 0], 3).tolist())
 print("forcerange", np.round(m.actuator_forcerange[pol], 3).tolist())
+print("servo spec", a.servo or "none")
+for row in servo_rows:
+    print("  servo override %s kp %.4g forcerange %.4g armature %.4g" % row)
+print("armature", np.round(m.dof_armature[vadr], 4).tolist())
 print("physics steps:", counter, "control steps:", len(saved_obs))
