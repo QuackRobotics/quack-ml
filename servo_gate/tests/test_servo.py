@@ -71,6 +71,28 @@ class ApplySpecTest(unittest.TestCase):
                 np.testing.assert_array_equal(after.actuator_gainprm[k], before.actuator_gainprm[k])
                 self.assertEqual(after.dof_armature[dof], before.dof_armature[dof])
 
+    def test_damping_friction_and_mass_on_parent_body(self):
+        before, after = self.model(), self.model()
+        apply_spec(after, {"groups": {"knee": {"damping": 0.82, "frictionloss": 0.1,
+                                               "added_mass": 0.034}}})
+        changed = set()
+        for k in range(after.nu):
+            if not after.actuator(k).name.endswith("_knee"):
+                continue
+            dof = after.jnt_dofadr[after.actuator_trnid[k, 0]]
+            self.assertEqual(after.dof_damping[dof], 0.82)
+            self.assertEqual(after.dof_frictionloss[dof], 0.1)
+            body = after.body_parentid[after.jnt_bodyid[after.actuator_trnid[k, 0]]]
+            changed.add(body)
+            self.assertAlmostEqual(after.body_mass[body], before.body_mass[body] + 0.034)
+            np.testing.assert_allclose(after.body_inertia[body] / before.body_inertia[body],
+                                       after.body_mass[body] / before.body_mass[body])
+        self.assertEqual(len(changed), 2)
+        for b in range(after.nbody):
+            if b not in changed:
+                self.assertEqual(after.body_mass[b], before.body_mass[b])
+        self.assertAlmostEqual(after.body_subtreemass[0], before.body_subtreemass[0] + 0.068)
+
     def test_pg_cap191_spec_matches_xml_capped_model(self):
         """The spec must reproduce the XML edit used for the formal gate run pg_cap191."""
         with tempfile.TemporaryDirectory() as tmp:

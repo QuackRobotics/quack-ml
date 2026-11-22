@@ -7,7 +7,7 @@ Differences from the reference (by design):
 Timing matches MJInferBase: one mj_step from qpos0, then home qpos/ctrl, then the
 policy acts after every 10th physics step.
 Usage: harness.py <model.xml> <onnx> <outdir> [--pg <pg_repo_root>] [--servo <spec.json>]
---servo overrides forcerange, kp and armature per leg joint group (see servo.py) on the
+--servo overrides forcerange, kp, armature, damping, frictionloss and servo mass per leg joint group (see servo.py) on the
 compiled model before the first step; without it the run is unchanged.
 """
 import argparse
@@ -25,7 +25,7 @@ ap.add_argument("model")
 ap.add_argument("onnx")
 ap.add_argument("out")
 ap.add_argument("--pg", default=os.path.join(os.path.dirname(__file__), "..", "pg"))
-ap.add_argument("--servo", help="servo spec JSON with per-group forcerange/kp/armature")
+ap.add_argument("--servo", help="servo spec JSON with per-group forcerange/kp/armature/damping/frictionloss/added_mass")
 a = ap.parse_args()
 sys.path.insert(0, os.path.join(a.pg, "playground", "common"))
 from poly_reference_motion_numpy import PolyReferenceMotion  # noqa: E402
@@ -111,6 +111,7 @@ print("kp", np.round(m.actuator_gainprm[pol, 0], 3).tolist())
 print("forcerange", np.round(m.actuator_forcerange[pol], 3).tolist())
 print("servo spec", a.servo or "none")
 for row in servo_rows:
-    print("  servo override %s kp %.4g forcerange %.4g armature %.4g" % row)
+    print("  servo override %s kp %.4g forcerange %.4g armature %.4g damping %.4g"
+          " frictionloss %.4g servo_body %s mass %.4g" % row)
 print("armature", np.round(m.dof_armature[vadr], 4).tolist())
 print("physics steps:", counter, "control steps:", len(saved_obs))

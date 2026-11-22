@@ -2,11 +2,15 @@
 
 A servo spec is JSON:
   {"name": "<servo_name>", "source": "<where the numbers come from>",
-   "groups": {"knee": {"forcerange": 1.91, "kp": 13.37, "armature": 0.027}, ...}}
+   "groups": {"knee": {"forcerange": 1.91, "kp": 13.37, "armature": 0.027,
+                       "damping": 0.56, "frictionloss": 0.068, "added_mass": 0.034}, ...}}
 Groups are the leg joint groups below; each applies to the left and right actuator.
 Every field is optional; an omitted group or field keeps the model's own value.
 forcerange is the symmetric limit in Nm, kp the position gain in Nm/rad, armature
-the reflected rotor inertia in kg m^2 added to the joint's DOF.
+the reflected rotor inertia in kg m^2 of the joint's DOF, damping (N m s/rad) and
+frictionloss (N m) the joint's passive terms. added_mass (kg) is the extra servo mass
+per side; it goes on the joint's parent body (where the servo housing is assumed to
+sit), at that body's centre of mass, with its inertia scaled by the new/old mass ratio.
 """
 import json
 import re
@@ -15,7 +19,7 @@ import mujoco
 import numpy as np
 
 LEG_GROUPS = ("hip_yaw", "hip_roll", "hip_pitch", "knee", "ankle")
-FIELDS = ("forcerange", "kp", "armature")
+FIELDS = ("forcerange", "kp", "armature", "damping", "frictionloss", "added_mass")
 NAME_RE = re.compile(r"[A-Za-z0-9_.-]+")
 
 
@@ -55,6 +59,7 @@ def group_actuators(model: mujoco.MjModel, group: str) -> list:
 def apply_spec(model: mujoco.MjModel, spec: dict) -> list:
     """Write the spec into the compiled model in place; return one row per changed actuator."""
     rows = []
+    mass_changed = False
     for group, params in spec["groups"].items():
         for k in group_actuators(model, group):
             if model.actuator_biastype[k] != mujoco.mjtBias.mjBIAS_AFFINE or not np.isclose(
@@ -69,6 +74,20 @@ def apply_spec(model: mujoco.MjModel, spec: dict) -> list:
                 model.actuator_forcerange[k] = (-params["forcerange"], params["forcerange"])
             if "armature" in params:
                 model.dof_armature[dof] = params["armature"]
+            if "damping" in params:
+                model.dof_damping[dof] = params["damping"]
+            if "frictionloss" in params:
+                model.dof_frictionloss[dof] = params["frictionloss"]
+            body = model.body_parentid[model.jnt_bodyid[model.actuator_trnid[k, 0]]]
+            if "added_mass" in params:
+                old = model.body_mass[body]
+                model.body_mass[body] = old + params["added_mass"]
+                model.body_inertia[body] *= model.body_mass[body] / old
+                mass_changed = True
             rows.append((model.actuator(k).name, float(model.actuator_gainprm[k, 0]),
-                         float(model.actuator_forcerange[k, 1]), float(model.dof_armature[dof])))
+                         float(model.actuator_forcerange[k, 1]), float(model.dof_armature[dof]),
+                         float(model.dof_damping[dof]), float(model.dof_frictionloss[dof]),
+                         model.body(body).name, float(model.body_mass[body])))
+    if mass_changed:
+        mujoco.mj_setConst(model, mujoco.MjData(model))
     return rows
