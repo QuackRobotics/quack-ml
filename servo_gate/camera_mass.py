@@ -25,14 +25,16 @@ def _home(m: mujoco.MjModel) -> mujoco.MjData:
     return d
 
 
-def load_with_camera(xml_path: str, grams: float, pos_head=None) -> mujoco.MjModel:
+def load_with_camera(xml_path: str, grams: float, pos_head=None, head_masses=()) -> mujoco.MjModel:
     """Compile xml_path; if grams > 0, add the camera point mass under head_assembly.
 
     pos_head: mount point in the head_assembly frame (m); default is CAMERA_POS_WORLD_HOME at home.
+    head_masses: extra point masses [(kg, pos_head m)] folded into head_assembly (merge_head_masses).
     """
     if grams < 0:
         raise ValueError(f"camera mass must be >= 0 g, got {grams}")
     spec = mujoco.MjSpec.from_file(xml_path)
+    merge_head_masses(spec, head_masses)
     if grams == 0:
         return spec.compile()
     m0 = spec.compile()
@@ -58,3 +60,50 @@ def head_com_home(m: mujoco.MjModel) -> tuple[float, np.ndarray]:
     d = _home(m)
     b = m.body(HEAD_BODY).id
     return float(m.body_subtreemass[b]), d.subtree_com[b].copy()
+
+
+def parse_head_mass(s: str) -> tuple[float, np.ndarray]:
+    """'g@x,y,z' (grams, mm in the head_assembly frame) -> (kg, m). Grams may be negative (a removal)."""
+    try:
+        g, xyz = s.split("@")
+        grams = float(g)
+        pos = np.array([float(v) for v in xyz.split(",")], dtype=float)
+    except ValueError as e:
+        raise ValueError(f"head mass must look like 'g@x,y,z' (mm), got {s!r}") from e
+    if pos.shape != (3,):
+        raise ValueError(f"head mass position needs 3 coordinates, got {s!r}")
+    return grams / 1000.0, pos / 1000.0
+
+
+def merge_head_masses(spec: mujoco.MjSpec, masses) -> None:
+    """Fold point masses [(kg, pos_head m), ...] into the head_assembly inertial of spec, in place.
+
+    Unlike the camera child body this also handles removals (negative kg): head_assembly keeps one
+    inertial with the summed mass, the combined CoM and the parallel-axis inertia about it.
+    Raises ValueError if the result is not a physical inertial.
+    """
+    if not masses:
+        return
+    m0 = spec.compile()
+    b = m0.body(HEAD_BODY).id
+    rot = np.zeros(9)
+    mujoco.mju_quat2Mat(rot, m0.body_iquat[b])
+    rot = rot.reshape(3, 3)
+    parts = [(float(m0.body_mass[b]), m0.body_ipos[b].copy(), rot @ np.diag(m0.body_inertia[b]) @ rot.T)]
+    parts += [(float(k), np.asarray(p, dtype=float), np.zeros((3, 3))) for k, p in masses]
+    mass = sum(k for k, _, _ in parts)
+    if mass <= 0:
+        raise ValueError(f"head_assembly mass would be {mass * 1000:.1f} g")
+    com = sum(k * p for k, p, _ in parts) / mass
+    inertia = np.zeros((3, 3))
+    for k, p, i_own in parts:
+        dv = p - com
+        inertia += i_own + k * (dv @ dv * np.eye(3) - np.outer(dv, dv))
+    ev = np.linalg.eigvalsh(inertia)
+    if ev.min() <= 0 or 2 * ev.max() > ev.sum():
+        raise ValueError(f"head_assembly inertia not physical after merge: eigenvalues {ev}")
+    body = spec.find_body(HEAD_BODY)
+    body.explicitinertial = True
+    body.mass = mass
+    body.ipos = com
+    body.fullinertia = [inertia[0, 0], inertia[1, 1], inertia[2, 2], inertia[0, 1], inertia[0, 2], inertia[1, 2]]

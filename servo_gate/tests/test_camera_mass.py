@@ -7,7 +7,8 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
-from camera_mass import CAMERA_POS_WORLD_HOME, WOZ_POS_HEAD, head_com_home, load_with_camera  # noqa: E402
+from camera_mass import (CAMERA_POS_WORLD_HOME, WOZ_POS_HEAD, head_com_home, load_with_camera,  # noqa: E402
+                         parse_head_mass)
 
 PG_ROOT = os.environ.get("PG_ROOT")
 XML = os.path.join(PG_ROOT or "", "playground/open_duck_mini_v2/xmls/scene_flat_terrain.xml")
@@ -55,3 +56,39 @@ class CameraMassTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ParseHeadMassTest(unittest.TestCase):
+    def test_parse(self):
+        k, p = parse_head_mass("-12.5@22,47,6")
+        self.assertAlmostEqual(k, -0.0125)
+        np.testing.assert_allclose(p, [0.022, 0.047, 0.006])
+
+    def test_bad_input_raises(self):
+        for s in ("18", "18@1,2", "x@1,2,3"):
+            with self.assertRaises(ValueError):
+                parse_head_mass(s)
+
+
+@unittest.skipUnless(PG_ROOT, "PG_ROOT not set")
+class HeadMassMergeTest(unittest.TestCase):
+    def test_merged_mass_matches_child_body(self):
+        a = load_with_camera(XML, 10, WOZ_POS_HEAD)
+        b = load_with_camera(XML, 0, None, [(0.010, WOZ_POS_HEAD)])
+        (ma, ca), (mb, cb) = head_com_home(a), head_com_home(b)
+        self.assertAlmostEqual(ma, mb, places=9)
+        np.testing.assert_allclose(ca, cb, atol=1e-9)
+
+    def test_add_then_remove_restores_stock(self):
+        import mujoco
+        stock = mujoco.MjModel.from_xml_path(XML)
+        m = load_with_camera(XML, 0, None, [(0.018, np.array([0.022, 0.047, 0.006])),
+                                             (-0.018, np.array([0.022, 0.047, 0.006]))])
+        h = stock.body("head_assembly").id
+        self.assertAlmostEqual(m.body_mass[h], stock.body_mass[h], places=9)
+        np.testing.assert_allclose(m.body_ipos[h], stock.body_ipos[h], atol=1e-9)
+        np.testing.assert_allclose(np.sort(m.body_inertia[h]), np.sort(stock.body_inertia[h]), rtol=1e-6)
+
+    def test_removal_below_zero_raises(self):
+        with self.assertRaises(ValueError):
+            load_with_camera(XML, 0, None, [(-1.0, np.zeros(3))])
