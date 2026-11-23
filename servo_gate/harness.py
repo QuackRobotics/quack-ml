@@ -33,13 +33,15 @@ ap.add_argument("--acc-offset", type=float, default=1.3,
 ap.add_argument("--seed", type=int, help=f"perturb the home joint angles by uniform +-{JOINT_NOISE_RAD} rad with this seed")
 ap.add_argument("--head-mass", action="append", default=[], metavar="G@X,Y,Z",
                 help="extra head point mass in grams at x,y,z mm in head_assembly (repeatable; negative removes)")
+ap.add_argument("--vx", type=float, default=0.15, help="commanded forward speed m/s (default 0.15 = arrow-up = COMMANDS_RANGE_X[1])")
+ap.add_argument("--wz", type=float, default=0.0, help="commanded yaw rate rad/s (default 0)")
 a = ap.parse_args()
 sys.path.insert(0, os.path.join(a.pg, "playground", "common"))
 from poly_reference_motion_numpy import PolyReferenceMotion  # noqa: E402
 
 SIM_DT, DECIM, N_CTRL = 0.002, 10, 5000
 DOF_VEL_SCALE, ACTION_SCALE, MAX_MOTOR_VEL = 0.05, 0.25, 5.24
-COMMANDS = np.array([0.15, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])  # arrow-up = COMMANDS_RANGE_X[1]
+COMMANDS = np.array([a.vx, 0.0, a.wz, 0.0, 0.0, 0.0, 0.0])  # default vx 0.15 = arrow-up = COMMANDS_RANGE_X[1]
 
 m = (load_with_camera(a.model, 0.0, None, [parse_head_mass(x) for x in a.head_mass])
      if a.head_mass else mujoco.MjModel.from_xml_path(a.model))
