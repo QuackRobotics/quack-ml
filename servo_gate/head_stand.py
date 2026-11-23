@@ -16,7 +16,7 @@ import mujoco
 import numpy as np
 import onnxruntime
 
-from camera_mass import head_com_home, load_with_camera
+from camera_mass import WOZ_POS_HEAD, head_com_home, load_with_camera
 from head_overlay import HEAD, HEAD_JOINTS, offsets_rad, overlay, parse_fracs
 from servo import apply_spec, load_spec
 from start_state import perturb_joints
@@ -35,6 +35,8 @@ ap.add_argument("--acc-offset", type=float, default=1.3,
 ap.add_argument("--feedback", choices=("post", "pre"), default="post",
                 help="obs 83-96: post = targets sent incl. head overlay; pre = policy's own targets (as trained)")
 ap.add_argument("--camera-g", type=float, default=0.0, help="camera point mass on the head front face (camera_mass.py)")
+ap.add_argument("--camera-pos", choices=("face", "woz"), default="face",
+                help="face = front-face centreline point (default, earlier runs); woz = Woz ray-cast point")
 a = ap.parse_args()
 sys.path.insert(0, os.path.join(a.pg, "playground", "common"))
 from poly_reference_motion_numpy import PolyReferenceMotion  # noqa: E402
@@ -44,7 +46,7 @@ DOF_VEL_SCALE, ACTION_SCALE, MAX_MOTOR_VEL = 0.05, 0.25, 5.24
 FALL_TILT_DEG, FALL_Z = 45.0, 0.08
 COMMANDS = np.zeros(7)
 
-m = load_with_camera(a.model, a.camera_g)
+m = load_with_camera(a.model, a.camera_g, WOZ_POS_HEAD if a.camera_pos == "woz" else None)
 head_mass0, head_com0 = head_com_home(load_with_camera(a.model, 0))
 head_mass, head_com = head_com_home(m)
 m.opt.timestep = SIM_DT
@@ -156,7 +158,7 @@ def yaw(q):
 kf = np.array(log["knee_f"])[(onset + 250) * DECIM:]
 res = {
     "mujoco": mujoco.__version__, "seed": a.seed, "head_fracs": fracs.tolist(),
-    "acc_offset": a.acc_offset, "feedback": a.feedback, "camera_g": a.camera_g,
+    "acc_offset": a.acc_offset, "feedback": a.feedback, "camera_g": a.camera_g, "camera_pos": a.camera_pos,
     "head_mass_g": round(head_mass * 1000, 2),
     "head_com_shift_mm_home": np.round((head_com - head_com0) * 1000, 3).tolist(),
     "head_offset_rad": np.round(off, 4).tolist(), "onset_s": a.onset_s,
