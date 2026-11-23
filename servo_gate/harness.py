@@ -19,7 +19,7 @@ import numpy as np
 import onnxruntime
 
 from camera_mass import load_with_camera, parse_head_mass
-from servo import apply_spec, load_spec
+from servo import SpeedLimit, apply_spec, load_spec
 from start_state import JOINT_NOISE_RAD, perturb_joints
 
 ap = argparse.ArgumentParser()
@@ -44,8 +44,12 @@ COMMANDS = np.array([0.15, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])  # arrow-up = COMMANDS
 m = (load_with_camera(a.model, 0.0, None, [parse_head_mass(x) for x in a.head_mass])
      if a.head_mass else mujoco.MjModel.from_xml_path(a.model))
 m.opt.timestep = SIM_DT
-servo_rows = apply_spec(m, load_spec(a.servo)) if a.servo else []
+spec = load_spec(a.servo) if a.servo else None
+servo_rows = apply_spec(m, spec) if spec else []
+speed_limit = SpeedLimit(m, spec) if spec else None
 d = mujoco.MjData(m)
+if speed_limit is not None:
+    speed_limit.apply(m, d)
 mujoco.mj_step(m, d)
 
 names = [m.actuator(k).name for k in range(m.nu)]
@@ -79,10 +83,16 @@ n = len(pol)
 last, last2, last3 = np.zeros(n), np.zeros(n), np.zeros(n)
 imitation_i, phase = 0, np.array([0, 0])
 saved_obs, log_force, log_base, log_targets, log_feet = [], [], [], [], []
+log_qvel, log_hit = [], []  # per physics step: joint speed (rad/s), force at its limit
 counter = 0
 while counter < N_CTRL * DECIM:
+    if speed_limit is not None:
+        speed_limit.apply(m, d)
     mujoco.mj_step(m, d)
     log_force.append(d.actuator_force[pol].copy())
+    log_qvel.append(d.qvel[vadr].astype(np.float32))
+    fr = m.actuator_forcerange[pol]
+    log_hit.append((d.actuator_force[pol] >= fr[:, 1] - 1e-6) | (d.actuator_force[pol] <= fr[:, 0] + 1e-6))
     log_base.append(d.qpos[:7].copy())
     counter += 1
     if counter % DECIM == 0:
@@ -114,6 +124,8 @@ np.save(f"{a.out}/base_qpos.npy", np.array(log_base))
 np.save(f"{a.out}/obs_first50.npy", np.array(saved_obs[:50]))
 np.save(f"{a.out}/motor_targets.npy", np.array(log_targets))
 np.save(f"{a.out}/feet_contact.npy", np.array(log_feet))
+np.save(f"{a.out}/joint_qvel.npy", np.array(log_qvel))
+np.save(f"{a.out}/cap_hit.npy", np.array(log_hit))
 np.save(f"{a.out}/actuator_forcerange.npy", m.actuator_forcerange[pol])
 open(f"{a.out}/actuator_names.txt", "w").write(" ".join(names[k] for k in pol))
 print("mujoco", mujoco.__version__, "onnxruntime", onnxruntime.__version__)
@@ -122,6 +134,9 @@ print("actuators:", [names[k] for k in pol])
 print("kp", np.round(m.actuator_gainprm[pol, 0], 3).tolist())
 print("forcerange", np.round(m.actuator_forcerange[pol], 3).tolist())
 print("servo spec", a.servo or "none")
+if speed_limit is not None and speed_limit.k.size:
+    print("torque-speed line", [(m.actuator(int(k)).name, float(t), float(w)) for k, t, w in
+                                zip(speed_limit.k, speed_limit.ts, speed_limit.w0)])
 print("acc x offset", a.acc_offset)
 print("head mass add", a.head_mass or "none")
 print("start seed", "none" if a.seed is None else f"{a.seed} (joint noise +-{JOINT_NOISE_RAD} rad)")

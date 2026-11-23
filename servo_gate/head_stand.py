@@ -18,7 +18,7 @@ import onnxruntime
 
 from camera_mass import WOZ_POS_HEAD, head_com_home, load_with_camera, parse_head_mass
 from head_overlay import HEAD, HEAD_JOINTS, offsets_rad, overlay, parse_fracs
-from servo import apply_spec, load_spec
+from servo import SpeedLimit, apply_spec, load_spec
 from start_state import perturb_joints
 
 ap = argparse.ArgumentParser()
@@ -53,9 +53,14 @@ m = load_with_camera(a.model, a.camera_g, WOZ_POS_HEAD if a.camera_pos == "woz" 
 head_mass0, head_com0 = head_com_home(load_with_camera(a.model, 0))
 head_mass, head_com = head_com_home(m)
 m.opt.timestep = SIM_DT
+speed_limit = None
 if a.servo:
-    apply_spec(m, load_spec(a.servo))
+    spec = load_spec(a.servo)
+    apply_spec(m, spec)
+    speed_limit = SpeedLimit(m, spec)
 d = mujoco.MjData(m)
+if speed_limit is not None:
+    speed_limit.apply(m, d)
 mujoco.mj_step(m, d)
 
 names = [m.actuator(k).name for k in range(m.nu)]
@@ -99,6 +104,8 @@ log = {"base": [], "tilt": [], "head_q": [], "head_t": [], "feet": [], "fb_err":
 clip_hits, applied_ctrl, step = 0, None, 0
 counter = 0
 while counter < N_CTRL * DECIM:
+    if speed_limit is not None:
+        speed_limit.apply(m, d)
     mujoco.mj_step(m, d)
     log["knee_f"].append(d.actuator_force[[pol[3], pol[12]]].copy())
     counter += 1
