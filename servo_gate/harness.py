@@ -18,6 +18,7 @@ import mujoco
 import numpy as np
 import onnxruntime
 
+from camera_mass import load_with_camera, parse_head_mass
 from servo import apply_spec, load_spec
 from start_state import JOINT_NOISE_RAD, perturb_joints
 
@@ -30,6 +31,8 @@ ap.add_argument("--servo", help="servo spec JSON with per-group forcerange/kp/ar
 ap.add_argument("--acc-offset", type=float, default=1.3,
                 help="added to accel x in the obs; 1.3 = mujoco_infer.py, 0 = what joystick.py trains on (its +1.3 is a no-op)")
 ap.add_argument("--seed", type=int, help=f"perturb the home joint angles by uniform +-{JOINT_NOISE_RAD} rad with this seed")
+ap.add_argument("--head-mass", action="append", default=[], metavar="G@X,Y,Z",
+                help="extra head point mass in grams at x,y,z mm in head_assembly (repeatable; negative removes)")
 a = ap.parse_args()
 sys.path.insert(0, os.path.join(a.pg, "playground", "common"))
 from poly_reference_motion_numpy import PolyReferenceMotion  # noqa: E402
@@ -38,7 +41,8 @@ SIM_DT, DECIM, N_CTRL = 0.002, 10, 5000
 DOF_VEL_SCALE, ACTION_SCALE, MAX_MOTOR_VEL = 0.05, 0.25, 5.24
 COMMANDS = np.array([0.15, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])  # arrow-up = COMMANDS_RANGE_X[1]
 
-m = mujoco.MjModel.from_xml_path(a.model)
+m = (load_with_camera(a.model, 0.0, None, [parse_head_mass(x) for x in a.head_mass])
+     if a.head_mass else mujoco.MjModel.from_xml_path(a.model))
 m.opt.timestep = SIM_DT
 servo_rows = apply_spec(m, load_spec(a.servo)) if a.servo else []
 d = mujoco.MjData(m)
@@ -74,7 +78,7 @@ sess = onnxruntime.InferenceSession(a.onnx, providers=["CPUExecutionProvider"])
 n = len(pol)
 last, last2, last3 = np.zeros(n), np.zeros(n), np.zeros(n)
 imitation_i, phase = 0, np.array([0, 0])
-saved_obs, log_force, log_base, log_targets = [], [], [], []
+saved_obs, log_force, log_base, log_targets, log_feet = [], [], [], [], []
 counter = 0
 while counter < N_CTRL * DECIM:
     mujoco.mj_step(m, d)
@@ -93,6 +97,7 @@ while counter < N_CTRL * DECIM:
             last, last2, last3, motor_targets,
             (contact(lf_b, floor_b), contact(rf_b, floor_b)), phase])
         saved_obs.append(obs)
+        log_feet.append(obs[-4:-2].copy())  # (left, right) foot-floor contact
         action = sess.run(None, {"obs": [obs]})[0][0]
         last3, last2, last = last2.copy(), last.copy(), action.copy()
         motor_targets = default + action * ACTION_SCALE
@@ -108,6 +113,7 @@ np.save(f"{a.out}/actuator_force.npy", np.array(log_force))
 np.save(f"{a.out}/base_qpos.npy", np.array(log_base))
 np.save(f"{a.out}/obs_first50.npy", np.array(saved_obs[:50]))
 np.save(f"{a.out}/motor_targets.npy", np.array(log_targets))
+np.save(f"{a.out}/feet_contact.npy", np.array(log_feet))
 np.save(f"{a.out}/actuator_forcerange.npy", m.actuator_forcerange[pol])
 open(f"{a.out}/actuator_names.txt", "w").write(" ".join(names[k] for k in pol))
 print("mujoco", mujoco.__version__, "onnxruntime", onnxruntime.__version__)
@@ -117,6 +123,7 @@ print("kp", np.round(m.actuator_gainprm[pol, 0], 3).tolist())
 print("forcerange", np.round(m.actuator_forcerange[pol], 3).tolist())
 print("servo spec", a.servo or "none")
 print("acc x offset", a.acc_offset)
+print("head mass add", a.head_mass or "none")
 print("start seed", "none" if a.seed is None else f"{a.seed} (joint noise +-{JOINT_NOISE_RAD} rad)")
 for row in servo_rows:
     print("  servo override %s kp %.4g forcerange %.4g armature %.4g damping %.4g"
