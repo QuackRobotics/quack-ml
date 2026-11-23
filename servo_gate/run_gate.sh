@@ -4,6 +4,7 @@
 # Env (all required): PY (python with mujoco + onnxruntime), PG_ROOT (Playground checkout),
 #   ONNX (policy file), OUT_ROOT (local run folders), GATE_BACKUP_URI (gs://.../razer).
 #   NO_BACKUP=1 skips the upload explicitly. SEED=<int> perturbs the start pose; the run is named <name>_s<seed>.
+#   ACC_OFFSET=<float> sets the accel-x obs offset (default 1.3, as mujoco_infer.py); the run is named <name>_acc<offset>.
 set -euo pipefail
 SPEC=$(realpath "$1")
 : "${PY:?}" "${PG_ROOT:?}" "${ONNX:?}" "${OUT_ROOT:?}"
@@ -12,6 +13,7 @@ NAME=$("$PY" -c "import sys; sys.path.insert(0, '$HERE'); from servo import load
 MODEL=$PG_ROOT/playground/open_duck_mini_v2/xmls/scene_flat_terrain.xml
 SEED_ARG=""
 if [ -n "${SEED:-}" ]; then NAME=${NAME}_s$SEED; SEED_ARG="--seed $SEED"; fi
+if [ -n "${ACC_OFFSET:-}" ]; then NAME=${NAME}_acc$ACC_OFFSET; SEED_ARG="$SEED_ARG --acc-offset $ACC_OFFSET"; fi
 OUT=$OUT_ROOT/$NAME
 if [ -e "$OUT" ]; then echo "refusing to overwrite $OUT" >&2; exit 2; fi
 mkdir -p "$OUT"

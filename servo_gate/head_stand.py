@@ -16,6 +16,7 @@ import mujoco
 import numpy as np
 import onnxruntime
 
+from camera_mass import head_com_home, load_with_camera
 from head_overlay import HEAD, HEAD_JOINTS, offsets_rad, overlay, parse_fracs
 from servo import apply_spec, load_spec
 from start_state import perturb_joints
@@ -29,6 +30,11 @@ ap.add_argument("--head", default="0,0,0,0", help="head offsets as fractions of 
 ap.add_argument("--onset-s", type=float, default=5.0)
 ap.add_argument("--seed", type=int)
 ap.add_argument("--servo")
+ap.add_argument("--acc-offset", type=float, default=1.3,
+                help="added to accel x in the obs; 0 matches training (joystick.py +1.3 is a no-op)")
+ap.add_argument("--feedback", choices=("post", "pre"), default="post",
+                help="obs 83-96: post = targets sent incl. head overlay; pre = policy's own targets (as trained)")
+ap.add_argument("--camera-g", type=float, default=0.0, help="camera point mass on the head front face (camera_mass.py)")
 a = ap.parse_args()
 sys.path.insert(0, os.path.join(a.pg, "playground", "common"))
 from poly_reference_motion_numpy import PolyReferenceMotion  # noqa: E402
@@ -38,7 +44,9 @@ DOF_VEL_SCALE, ACTION_SCALE, MAX_MOTOR_VEL = 0.05, 0.25, 5.24
 FALL_TILT_DEG, FALL_Z = 45.0, 0.08
 COMMANDS = np.zeros(7)
 
-m = mujoco.MjModel.from_xml_path(a.model)
+m = load_with_camera(a.model, a.camera_g)
+head_mass0, head_com0 = head_com_home(load_with_camera(a.model, 0))
+head_mass, head_com = head_com_home(m)
 m.opt.timestep = SIM_DT
 if a.servo:
     apply_spec(m, load_spec(a.servo))
@@ -61,6 +69,7 @@ d.qpos[:] = key.qpos if a.seed is None else perturb_joints(key.qpos, qadr, a.see
 d.ctrl[:] = key.ctrl
 motor_targets = default.copy()
 prev_motor_targets = default.copy()
+sent, prev_sent = default.copy(), default.copy()  # ctrl incl. overlay (pre mode only)
 
 gyro_adr = m.sensor_adr[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SENSOR, "gyro")]
 acc_adr = m.sensor_adr[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SENSOR, "accelerometer")]
@@ -93,31 +102,43 @@ while counter < N_CTRL * DECIM:
     imitation_i = (imitation_i + 1.0) % PRM.nb_steps_in_period
     ang = imitation_i / PRM.nb_steps_in_period * 2 * np.pi
     acc = d.sensordata[acc_adr:acc_adr + 3].copy()
-    acc[0] += 1.3
+    acc[0] += a.acc_offset
     feet = np.array([contact(lf_b, floor_b), contact(rf_b, floor_b)], dtype=float)
     obs = np.concatenate([
         d.sensordata[gyro_adr:gyro_adr + 3], acc, COMMANDS,
         d.qpos[qadr] - default, d.qvel[vadr] * DOF_VEL_SCALE,
         last, last2, last3, motor_targets, feet, [np.cos(ang), np.sin(ang)],
     ])
-    if applied_ctrl is not None:  # obs 83-96 must be the targets actually sent last step
+    if applied_ctrl is not None:  # obs 83-96 must be the expected targets from last step
         log["fb_err"].append(float(np.max(np.abs(obs[83:97] - applied_ctrl))))
     action = sess.run(None, {"obs": [obs]})[0][0]
     last3, last2, last = last2.copy(), last.copy(), action.copy()
     targets = default + action * ACTION_SCALE
-    if step >= onset:
-        targets, hits = overlay(targets, off, ctrl_lo, ctrl_hi)
-        clip_hits += hits
-    motor_targets = np.clip(targets, prev_motor_targets - MAX_MOTOR_VEL * (SIM_DT * DECIM),
-                            prev_motor_targets + MAX_MOTOR_VEL * (SIM_DT * DECIM))
-    prev_motor_targets = motor_targets.copy()
-    d.ctrl[pol] = motor_targets.copy()
-    applied_ctrl = d.ctrl[pol].copy()
+    dmax = MAX_MOTOR_VEL * (SIM_DT * DECIM)
+    if a.feedback == "post":  # overlay before the rate clip; obs sees what was sent
+        if step >= onset:
+            targets, hits = overlay(targets, off, ctrl_lo, ctrl_hi)
+            clip_hits += hits
+        motor_targets = np.clip(targets, prev_motor_targets - dmax, prev_motor_targets + dmax)
+        prev_motor_targets = motor_targets.copy()
+        d.ctrl[pol] = motor_targets.copy()
+        applied_ctrl = d.ctrl[pol].copy()
+    else:  # policy chain exactly as trained; overlay only on the ctrl, rate-clipped on its own
+        motor_targets = np.clip(targets, prev_motor_targets - dmax, prev_motor_targets + dmax)
+        prev_motor_targets = motor_targets.copy()
+        sent = motor_targets.copy()
+        if step >= onset:
+            sent, hits = overlay(sent, off, ctrl_lo, ctrl_hi)
+            clip_hits += hits
+        sent = np.clip(sent, prev_sent - dmax, prev_sent + dmax)
+        prev_sent = sent.copy()
+        d.ctrl[pol] = sent
+        applied_ctrl = motor_targets.copy()
     zb = d.xmat[1].reshape(3, 3)[:, 2]
     log["tilt"].append(float(np.degrees(np.arccos(np.clip(zb[2], -1, 1)))))
     log["base"].append(d.qpos[:7].copy())
     log["head_q"].append(d.qpos[qadr[HEAD]].copy())
-    log["head_t"].append(motor_targets[HEAD].copy())
+    log["head_t"].append(d.ctrl[np.array(pol)[HEAD]].copy())
     log["feet"].append(feet)
     step += 1
 
@@ -135,6 +156,9 @@ def yaw(q):
 kf = np.array(log["knee_f"])[(onset + 250) * DECIM:]
 res = {
     "mujoco": mujoco.__version__, "seed": a.seed, "head_fracs": fracs.tolist(),
+    "acc_offset": a.acc_offset, "feedback": a.feedback, "camera_g": a.camera_g,
+    "head_mass_g": round(head_mass * 1000, 2),
+    "head_com_shift_mm_home": np.round((head_com - head_com0) * 1000, 3).tolist(),
     "head_offset_rad": np.round(off, 4).tolist(), "onset_s": a.onset_s,
     "fell": bool(np.any(tilt > FALL_TILT_DEG) or np.any(base[:, 2] < FALL_Z)),
     "max_tilt_deg_after_onset": round(float(tilt[onset:].max()), 2),

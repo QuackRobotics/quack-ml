@@ -27,6 +27,8 @@ ap.add_argument("onnx")
 ap.add_argument("out")
 ap.add_argument("--pg", default=os.path.join(os.path.dirname(__file__), "..", "pg"))
 ap.add_argument("--servo", help="servo spec JSON with per-group forcerange/kp/armature/damping/frictionloss/added_mass")
+ap.add_argument("--acc-offset", type=float, default=1.3,
+                help="added to accel x in the obs; 1.3 = mujoco_infer.py, 0 = what joystick.py trains on (its +1.3 is a no-op)")
 ap.add_argument("--seed", type=int, help=f"perturb the home joint angles by uniform +-{JOINT_NOISE_RAD} rad with this seed")
 a = ap.parse_args()
 sys.path.insert(0, os.path.join(a.pg, "playground", "common"))
@@ -72,7 +74,7 @@ sess = onnxruntime.InferenceSession(a.onnx, providers=["CPUExecutionProvider"])
 n = len(pol)
 last, last2, last3 = np.zeros(n), np.zeros(n), np.zeros(n)
 imitation_i, phase = 0, np.array([0, 0])
-saved_obs, log_force, log_base = [], [], []
+saved_obs, log_force, log_base, log_targets = [], [], [], []
 counter = 0
 while counter < N_CTRL * DECIM:
     mujoco.mj_step(m, d)
@@ -84,7 +86,7 @@ while counter < N_CTRL * DECIM:
         ang = imitation_i / PRM.nb_steps_in_period * 2 * np.pi
         phase = np.array([np.cos(ang), np.sin(ang)])
         acc = d.sensordata[acc_adr:acc_adr + 3].copy()
-        acc[0] += 1.3
+        acc[0] += a.acc_offset
         obs = np.concatenate([
             d.sensordata[gyro_adr:gyro_adr + 3], acc, COMMANDS,
             d.qpos[qadr] - default, d.qvel[vadr] * DOF_VEL_SCALE,
@@ -99,11 +101,13 @@ while counter < N_CTRL * DECIM:
                                 prev_motor_targets + MAX_MOTOR_VEL * (SIM_DT * DECIM))
         prev_motor_targets = motor_targets.copy()
         d.ctrl[pol] = motor_targets.copy()
+        log_targets.append(motor_targets.copy())
 
 os.makedirs(a.out, exist_ok=True)
 np.save(f"{a.out}/actuator_force.npy", np.array(log_force))
 np.save(f"{a.out}/base_qpos.npy", np.array(log_base))
 np.save(f"{a.out}/obs_first50.npy", np.array(saved_obs[:50]))
+np.save(f"{a.out}/motor_targets.npy", np.array(log_targets))
 np.save(f"{a.out}/actuator_forcerange.npy", m.actuator_forcerange[pol])
 open(f"{a.out}/actuator_names.txt", "w").write(" ".join(names[k] for k in pol))
 print("mujoco", mujoco.__version__, "onnxruntime", onnxruntime.__version__)
@@ -112,6 +116,7 @@ print("actuators:", [names[k] for k in pol])
 print("kp", np.round(m.actuator_gainprm[pol, 0], 3).tolist())
 print("forcerange", np.round(m.actuator_forcerange[pol], 3).tolist())
 print("servo spec", a.servo or "none")
+print("acc x offset", a.acc_offset)
 print("start seed", "none" if a.seed is None else f"{a.seed} (joint noise +-{JOINT_NOISE_RAD} rad)")
 for row in servo_rows:
     print("  servo override %s kp %.4g forcerange %.4g armature %.4g damping %.4g"
