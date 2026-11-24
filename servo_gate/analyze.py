@@ -3,7 +3,7 @@
 Usage: analyze.py <outdir> [<cap_Nm>]
 Cap hits use each actuator's own limit from actuator_forcerange.npy when the run saved it;
 otherwise <cap_Nm> applies to every actuator (runs made before per-group servo specs).
-Steady window t >= 20 s. Physics dt 0.002 s. Path speed = mean 10 s chord length / 10 s.
+Steady window t >= 20 s. Physics dt 0.002 s. Body-forward vx sampled at the 50 Hz control rate. Path speed = mean 10 s chord length / 10 s.
 Writes per_joint.csv (full run), per_joint_steady.csv, base_trace.csv (50 Hz), gates.json.
 """
 import json
@@ -11,6 +11,8 @@ import os
 import sys
 
 import numpy as np
+
+from body_vx import body_forward_speed
 
 out = sys.argv[1]
 DT, T0 = 0.002, 20.0
@@ -39,6 +41,7 @@ g = {
     "steady_window_s": [round(float(t[s][0]), 3), round(float(t[s][-1]), 3)],
     "world_vx_full": (px[-1] - px[0]) / (t[-1] - t[0]),
     "world_vx_steady": (px[s][-1] - px[s][0]) / ts,
+    "body_vx_steady": body_forward_speed(px[s][::10], py[s][::10], yaw[s][::10], 10 * DT),
     "path_speed_steady": float(np.mean(chords)) / 10.0,
     "world_y_drift_per_10s_steady": (py[s][-1] - py[s][0]) / ts * 10,
     "heading_total_deg": float(np.degrees(yaw[-1] - yaw[0])),
