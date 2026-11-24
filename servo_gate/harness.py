@@ -104,7 +104,7 @@ n = len(pol)
 last, last2, last3 = np.zeros(n), np.zeros(n), np.zeros(n)
 imitation_i, phase = 0, np.array([0, 0])
 saved_obs, log_force, log_base, log_targets, log_feet = [], [], [], [], []
-log_qvel, log_hit = [], []
+log_qvel, log_hit, log_qpos = [], [], []
 log_hh, psi_ref = [], None  # per control step: psi, error, wz_cmd, saturated (heading hold only)  # per physics step: joint speed (rad/s), force at its limit
 counter = 0
 while counter < N_CTRL * DECIM:
@@ -144,12 +144,14 @@ while counter < N_CTRL * DECIM:
         prev_motor_targets = motor_targets.copy()
         d.ctrl[pol] = motor_targets.copy()
         log_targets.append(motor_targets.copy())
+        log_qpos.append(d.qpos[qadr].copy())  # measured joint angles at the same 50 Hz tick as motor_targets
 
 os.makedirs(a.out, exist_ok=True)
 np.save(f"{a.out}/actuator_force.npy", np.array(log_force))
 np.save(f"{a.out}/base_qpos.npy", np.array(log_base))
 np.save(f"{a.out}/obs_first50.npy", np.array(saved_obs[:50]))
 np.save(f"{a.out}/motor_targets.npy", np.array(log_targets))
+np.save(f"{a.out}/joint_qpos.npy", np.array(log_qpos))
 np.save(f"{a.out}/feet_contact.npy", np.array(log_feet))
 np.save(f"{a.out}/joint_qvel.npy", np.array(log_qvel))
 np.save(f"{a.out}/cap_hit.npy", np.array(log_hit))
