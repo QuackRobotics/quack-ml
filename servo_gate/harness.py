@@ -19,6 +19,7 @@ import numpy as np
 import onnxruntime
 
 from camera_mass import load_with_camera, parse_head_mass
+from head_overlay import HEAD, HEAD_JOINTS, offsets_rad, overlay, parse_fracs
 from servo import SpeedLimit, apply_spec, load_spec
 from start_state import JOINT_NOISE_RAD, perturb_joints
 
@@ -38,6 +39,9 @@ ap.add_argument("--wz", type=float, default=0.0, help="commanded yaw rate rad/s 
 ap.add_argument("--heading-hold-k", type=float, metavar="K",
                 help="heading hold gain (rad/s)/rad: wz_cmd = wz + clip(K*wrap(psi_ref - psi), +-clamp), psi = IMU framequat yaw; off by default")
 ap.add_argument("--heading-hold-clamp", type=float, default=0.1, help="heading hold correction clamp rad/s (default 0.1)")
+ap.add_argument("--head", help="head offsets n,p,y,r as fractions of full joint range, ADDED to the policy head targets "
+                "before the rate clip (Atlas runner: default + 0.25*action + offset, clamped); obs 83-96 see the sum; off by default")
+ap.add_argument("--onset-s", type=float, default=5.0, help="time the --head overlay starts (default 5 s)")
 ap.add_argument("--wz-max", type=float, default=1.0, help="final wz_cmd clip rad/s (default 1.0 = trained ang_vel_yaw range)")
 a = ap.parse_args()
 sys.path.insert(0, os.path.join(a.pg, "playground", "common"))
@@ -69,6 +73,13 @@ d.qpos[:] = key.qpos if a.seed is None else perturb_joints(key.qpos, qadr, a.see
 d.ctrl[:] = key.ctrl
 motor_targets = default.copy()
 prev_motor_targets = default.copy()
+if a.head:
+    head_pol = np.array(pol)[HEAD]
+    assert tuple(names[k] for k in head_pol) == HEAD_JOINTS, [names[k] for k in head_pol]
+    head_off = offsets_rad(parse_fracs(a.head), m.jnt_range[np.array(jids)[HEAD]])
+    head_lo, head_hi = m.actuator_ctrlrange[head_pol, 0], m.actuator_ctrlrange[head_pol, 1]
+    head_onset = int(round(a.onset_s / (SIM_DT * DECIM)))
+head_clip_hits, log_policy_targets = 0, []
 
 gyro_adr = m.sensor_adr[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SENSOR, "gyro")]
 acc_adr = m.sensor_adr[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SENSOR, "accelerometer")]
@@ -138,6 +149,11 @@ while counter < N_CTRL * DECIM:
         action = sess.run(None, {"obs": [obs]})[0][0]
         last3, last2, last = last2.copy(), last.copy(), action.copy()
         motor_targets = default + action * ACTION_SCALE
+        if a.head:
+            log_policy_targets.append(motor_targets.copy())
+            if counter // DECIM >= head_onset:
+                motor_targets, hits = overlay(motor_targets, head_off, head_lo, head_hi)
+                head_clip_hits += hits
         motor_targets = np.clip(motor_targets,
                                 prev_motor_targets - MAX_MOTOR_VEL * (SIM_DT * DECIM),
                                 prev_motor_targets + MAX_MOTOR_VEL * (SIM_DT * DECIM))
@@ -155,6 +171,10 @@ np.save(f"{a.out}/joint_qpos.npy", np.array(log_qpos))
 np.save(f"{a.out}/feet_contact.npy", np.array(log_feet))
 np.save(f"{a.out}/joint_qvel.npy", np.array(log_qvel))
 np.save(f"{a.out}/cap_hit.npy", np.array(log_hit))
+if a.head:
+    np.save(f"{a.out}/policy_targets.npy", np.array(log_policy_targets))  # default + 0.25*action, before overlay and rate clip
+    open(f"{a.out}/head_overlay.txt", "w").write(f"fracs {a.head} offset_rad {head_off.tolist()} onset_s {a.onset_s} "
+                                                 f"ctrlrange_clip_hits {head_clip_hits}\n")
 if a.heading_hold_k is not None:
     np.save(f"{a.out}/heading_hold.npy", np.array(log_hh))
 np.save(f"{a.out}/actuator_forcerange.npy", m.actuator_forcerange[pol])
