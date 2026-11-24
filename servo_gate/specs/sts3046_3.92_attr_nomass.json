@@ -1,0 +1,24 @@
+{
+ "name": "sts3046_3.92_attr_nomass",
+ "source": "Attribution only: sts3046_3.92 without the +34 g servo mass",
+ "groups": {
+  "hip_yaw": {
+   "forcerange": 1.91
+  },
+  "hip_roll": {
+   "forcerange": 1.91
+  },
+  "hip_pitch": {
+   "forcerange": 3.92,
+   "kp": 13.37
+  },
+  "knee": {
+   "forcerange": 3.92,
+   "kp": 13.37
+  },
+  "ankle": {
+   "forcerange": 3.92,
+   "kp": 13.37
+  }
+ }
+}

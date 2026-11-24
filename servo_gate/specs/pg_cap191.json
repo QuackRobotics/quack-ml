@@ -1,0 +1,11 @@
+{
+ "name": "pg_cap191",
+ "source": "Formal gate 2026-11-22: Playground kp 13.37 and armature 0.027, legs capped at the HD-1910 1.91 Nm stall",
+ "groups": {
+  "hip_yaw": {"forcerange": 1.91},
+  "hip_roll": {"forcerange": 1.91},
+  "hip_pitch": {"forcerange": 1.91},
+  "knee": {"forcerange": 1.91},
+  "ankle": {"forcerange": 1.91}
+ }
+}

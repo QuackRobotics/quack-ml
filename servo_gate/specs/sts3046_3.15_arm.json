@@ -1,0 +1,30 @@
+{
+ "name": "sts3046_3.15_arm",
+ "source": "Woz servo_candidates_v1.md (quack-core 66709c3, PR #8): STS3046 on knee+hip_pitch+ankle, +34 g per servo on the joint's parent body; hip_yaw/hip_roll stay STS3215 at the pinned 1.91 Nm; 2.5 A clamp; sensitivity: armature 0.0437 = 0.027 x 89/55 (Woz's mass-scaled suggestion)",
+ "groups": {
+  "hip_yaw": {
+   "forcerange": 1.91
+  },
+  "hip_roll": {
+   "forcerange": 1.91
+  },
+  "hip_pitch": {
+   "forcerange": 3.15,
+   "kp": 13.37,
+   "added_mass": 0.034,
+   "armature": 0.0437
+  },
+  "knee": {
+   "forcerange": 3.15,
+   "kp": 13.37,
+   "added_mass": 0.034,
+   "armature": 0.0437
+  },
+  "ankle": {
+   "forcerange": 3.15,
+   "kp": 13.37,
+   "added_mass": 0.034,
+   "armature": 0.0437
+  }
+ }
+}
