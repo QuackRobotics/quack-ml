@@ -39,6 +39,10 @@ ap.add_argument("--wz", type=float, default=0.0, help="commanded yaw rate rad/s 
 ap.add_argument("--heading-hold-k", type=float, metavar="K",
                 help="heading hold gain (rad/s)/rad: wz_cmd = wz + clip(K*wrap(psi_ref - psi), +-clamp), psi = IMU framequat yaw; off by default")
 ap.add_argument("--heading-hold-clamp", type=float, default=0.1, help="heading hold correction clamp rad/s (default 0.1)")
+ap.add_argument("--heading-hold-ki", type=float, metavar="KI",
+                help="heading hold integral gain 1/s (PI, Atlas 2026-11-24): I += KI*err*dt only while the output is off the clamp "
+                "(anti-windup freeze), |I| <= --heading-hold-iclamp, reset on stop (vx=vy=wz=0) and on any wz command change; off by default")
+ap.add_argument("--heading-hold-iclamp", type=float, default=0.05, help="heading hold integral term clamp rad/s (default 0.05)")
 ap.add_argument("--head", help="head offsets n,p,y,r as fractions of full joint range, ADDED to the policy head targets "
                 "before the rate clip (Atlas runner: default + 0.25*action + offset, clamped); obs 83-96 see the sum; off by default")
 ap.add_argument("--onset-s", type=float, default=5.0, help="time the --head overlay starts (default 5 s)")
@@ -87,15 +91,29 @@ quat_adr = m.sensor_adr[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SENSOR, "orient
 floor_b, lf_b, rf_b = (d.body(n).id for n in ("floor", "foot_assembly", "foot_assembly_2"))
 
 
+HH_I = {"i": 0.0, "wz_prev": None}  # PI state (only used with --heading-hold-ki)
+
+
 def heading_hold(psi, psi_ref, wz_user):
-    """Atlas v1 heading hold, 50 Hz, no integrator: returns (wz_cmd, psi_ref, error, saturated).
+    """Atlas v1 heading hold, 50 Hz: returns (wz_cmd, psi_ref, error, saturated).
 
     psi_ref is set at the first tick and reset whenever the user commands a turn (|wz_user| > 0).
+    Without --heading-hold-ki this is P-only (no integrator), unchanged. With it, the integral term HH_I["i"] is
+    added before the output clamp, frozen while the output sits on the clamp, clamped to +-iclamp, and reset on
+    stop (all of vx, vy, wz zero) and whenever wz_user changes.
     """
     if psi_ref is None or abs(wz_user) > 0:
         psi_ref = psi
     err = (psi_ref - psi + np.pi) % (2 * np.pi) - np.pi
     u = a.heading_hold_k * err
+    if a.heading_hold_ki is not None:
+        if (a.vx == 0 and wz_user == 0) or HH_I["wz_prev"] is None or wz_user != HH_I["wz_prev"]:
+            HH_I["i"] = 0.0
+        HH_I["wz_prev"] = wz_user
+        if abs(u + HH_I["i"]) < a.heading_hold_clamp:
+            HH_I["i"] = float(np.clip(HH_I["i"] + a.heading_hold_ki * err * DECIM * SIM_DT,
+                                      -a.heading_hold_iclamp, a.heading_hold_iclamp))
+        u = u + HH_I["i"]
     sat = abs(u) >= a.heading_hold_clamp
     u = float(np.clip(u, -a.heading_hold_clamp, a.heading_hold_clamp))
     return float(np.clip(wz_user + u, -a.wz_max, a.wz_max)), psi_ref, float(err), bool(sat)
@@ -136,7 +154,7 @@ while counter < N_CTRL * DECIM:
             qw, qx, qy, qz = d.sensordata[quat_adr:quat_adr + 4]
             psi = float(np.arctan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz)))
             COMMANDS[2], psi_ref, err, sat = heading_hold(psi, psi_ref, a.wz)
-            log_hh.append((psi, err, COMMANDS[2], sat))
+            log_hh.append((psi, err, COMMANDS[2], sat) if a.heading_hold_ki is None else (psi, err, COMMANDS[2], sat, HH_I["i"]))
         acc = d.sensordata[acc_adr:acc_adr + 3].copy()
         acc[0] += a.acc_offset
         obs = np.concatenate([
@@ -190,7 +208,8 @@ if speed_limit is not None and speed_limit.k.size:
                                 zip(speed_limit.k, speed_limit.ts, speed_limit.w0)])
 print("acc x offset", a.acc_offset)
 print("heading hold", "off" if a.heading_hold_k is None else
-      f"k {a.heading_hold_k} clamp {a.heading_hold_clamp} wz_max {a.wz_max}")
+      f"k {a.heading_hold_k} clamp {a.heading_hold_clamp} wz_max {a.wz_max}"
+      + ("" if a.heading_hold_ki is None else f" ki {a.heading_hold_ki} iclamp {a.heading_hold_iclamp}"))
 print("head mass add", a.head_mass or "none")
 print("start seed", "none" if a.seed is None else f"{a.seed} (joint noise +-{JOINT_NOISE_RAD} rad)")
 for row in servo_rows:
